@@ -1,0 +1,38 @@
+; Unofficial ARM64 binding for Crestron devices that present USB-Ethernet (RNDIS),
+; VID_0525&PID_A4A2. Same as Crestron's CrestronRNDIS.inf plus an NTarm64
+; decoration. Uses the inbox netrndis.inf / rndismp6.sys - no binaries shipped.
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = Net
+ClassGUID   = {4d36e972-e325-11ce-bfc1-08002be10318}
+Provider    = %ProviderName%
+DriverVer   = 11/01/2026,6.0.6000.16385
+CatalogFile = CrestronRNDIS-arm64.cat
+PnpLockdown = 1
+
+[Manufacturer]
+%ProviderName% = RndisDevices,NTarm64
+
+[RndisDevices.NTarm64]
+%RndisDevice% = RNDIS.NT.6.0, USB\VID_0525&PID_A4A2
+
+[ControlFlags]
+ExcludeFromSelect = *
+
+[RNDIS.NT.6.0]
+Characteristics    = 0x84
+BusType            = 15
+include            = netrndis.inf
+needs              = usbrndis6.ndi
+*IfType            = 6
+*MediaType         = 16
+*PhysicalMediaType = 14
+
+[RNDIS.NT.6.0.Services]
+include = netrndis.inf
+needs   = usbrndis6.ndi.Services
+
+[Strings]
+ProviderName = "DMI (unofficial ARM64 binding)"
+RndisDevice  = "Crestron USB Ethernet (RNDIS, ARM64)"

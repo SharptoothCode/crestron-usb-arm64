@@ -1,0 +1,71 @@
+; Unofficial ARM64 binding for Crestron USB devices (Toolbox console / loader / IR learner).
+; Binds the same VID/PIDs as Crestron's CtrnWinUsb.inf (Toolbox "USB Driver" folder)
+; to Windows' INBOX WinUSB, exposing the same DeviceInterfaceGUID Toolbox looks for.
+;
+; Differences from the original (all deliberate):
+;  - NTarm64 decoration (the original has only NTx86 / NTamd64).
+;  - No KMDF/WinUSB co-installers: obsolete on Windows 10+, and x64-only.
+;  - No CtrnDCls2.dll class installer: a user-mode x64 DLL, cannot load in a native
+;    ARM64 setup process. Cosmetic only (class name/icon).
+;  - PIDs 0003/0004/0007 originally ALSO load CtrnWinUsbLowerFilter.sys, a kernel
+;    filter with no ARM64 build. Here they get plain WinUSB. EXPERIMENTAL: they may
+;    misbehave if the device relies on whatever that filter does.
+;
+; Ships no binaries. Needs a signed catalog to install - see README.md.
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = Crestron
+ClassGUID   = {0A644645-7D0C-4cac-AFF8-F17553F2F56C}
+Provider    = %ProviderName%
+DriverVer   = 11/01/2026,3.0.0.100
+CatalogFile = CrestronWinUsb-arm64.cat
+PnpLockdown = 1
+
+[ClassInstall32]
+AddReg = Class_AddReg
+
+[Class_AddReg]
+HKR,,,,%DeviceClassName%
+HKR,,Icon,,-20
+
+[Manufacturer]
+%ProviderName% = CrestronUSBDevices,NTarm64
+
+[CrestronUSBDevices.NTarm64]
+%CrestronUSBDev%          = WinUSB_Install, USB\VID_14be&PID_0017
+%CrestronUSBDev%          = WinUSB_Install, USB\VID_14be&PID_0016
+%CrestronUSBDev%          = WinUSB_Install, USB\VID_14be&PID_0015
+%CrestronUSBDev%          = WinUSB_Install, USB\VID_14be&PID_0014
+%CrestronUSBDev%          = WinUSB_Install, USB\VID_14be&PID_0013
+%CrestronUSBDev%          = WinUSB_Install, USB\VID_14be&PID_0012
+%CrestronUSBDev%          = WinUSB_Install, USB\VID_14be&PID_0011
+%CrestronUSBDev%          = WinUSB_Install, USB\VID_14be&PID_0010
+%GenericConsoleDev%       = WinUSB_Install, USB\VID_14be&PID_0009
+; EXPERIMENTAL - originally WinUSB + CtrnWinUsbLowerFilter.sys
+%GenericConsoleLoaderDev% = WinUSB_Install, USB\VID_14be&PID_0007
+%GenericConsoleLegacyDev% = WinUSB_Install, USB\VID_14be&PID_0003
+%GenericConsoleDev%       = WinUSB_Install, USB\VID_14be&PID_0004
+
+[WinUSB_Install]
+Include = winusb.inf
+Needs   = WINUSB.NT
+
+[WinUSB_Install.Services]
+Include = winusb.inf
+Needs   = WINUSB.NT.Services
+
+[WinUSB_Install.HW]
+AddReg = Dev_AddReg
+
+[Dev_AddReg]
+; Same interface GUID as Crestron's INF - this is what Toolbox enumerates.
+HKR,,DeviceInterfaceGUIDs,0x10000,"{0251445b-4b22-4ec7-b1c9-37f36e587b13}"
+
+[Strings]
+ProviderName            = "DMI (unofficial ARM64 binding)"
+DeviceClassName         = "Crestron"
+CrestronUSBDev          = "Crestron USB Device (ARM64 WinUSB)"
+GenericConsoleDev       = "Generic Crestron Console V2 Device (ARM64 WinUSB)"
+GenericConsoleLegacyDev = "Generic Crestron Console Device (ARM64 WinUSB)"
+GenericConsoleLoaderDev = "Generic Crestron Loader Device (ARM64 WinUSB)"
