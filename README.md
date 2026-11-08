@@ -16,10 +16,19 @@ Tested on Windows 11 ARM64 (Parallels) with Toolbox:
 |---|---|---|
 | CP3 processor | VID 14BE PID 0009 | Console, IP configuration, program load: working |
 | CSP-LIR-USB IR learner | VID 14BE PID 0009 | Learn IR: working |
+| CP4 processor | VID 0525 PID A4A2 (USB-Ethernet / RNDIS) | Toolbox over USB: working |
 
 Devices with PID 0003, 0004 or 0007 (older consoles and loaders) are bound the
 same way but are **untested**. On x64, Crestron's driver adds a filter driver for them
 that has no ARM64 build.
+
+4-Series processors (CP4 etc.) show up as a USB network adapter instead, listed in
+Parallels as **"RNDIS/Ethernet Gadget"** (VID 0525 PID A4A2). The script binds them
+to Windows' built-in "Remote NDIS Compatible Device" driver, which is what
+Crestron's RNDIS setup file does on x64. Without it, Windows often puts the
+processor under Ports (COM & LPT) as "USB Serial Device"; the script replaces
+that serial driver for this device only. Tested on a CP4. Pass the
+"RNDIS/Ethernet Gadget" entry through to Windows before running the script.
 
 ## Why it's needed
 
@@ -52,9 +61,10 @@ connected". Connect only the learner while learning IR.
 
 ## Uninstall
 
-Double-click `Uninstall.cmd`. Crestron devices bound to WinUSB go back to
-having no driver. Devices on any other driver, and Crestron's own driver
-packages, are not touched.
+Double-click `Uninstall.cmd`. Devices this tool bound to WinUSB go back to
+having no driver; a 4-Series processor bound to RNDIS goes back to whatever
+Windows picks for it (usually its USB serial driver). Devices on any other
+driver, and Crestron's own driver packages, are not touched.
 
 ## Files
 

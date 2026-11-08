@@ -12,6 +12,22 @@ $script:CrestronInterfaceGuid = '{0251445b-4b22-4ec7-b1c9-37f36e587b13}'
 # load a Crestron kernel filter with no ARM64 build; here they get plain WinUSB.
 $script:CrestronIdPattern = '^USB\\VID_14BE&PID_(0003|0004|0007|0009|001[0-7])\\'
 
+# 4-Series processors (CP4 etc.) present their USB port as a USB-Ethernet (RNDIS)
+# gadget with the generic Linux gadget ID, which Crestron's CrestronRNDIS.inf binds
+# to Microsoft's RNDIS driver. Parallels lists it as "RNDIS/Ethernet Gadget".
+# &MI_xx covers Windows splitting it as a composite device. The ID is not unique
+# to Crestron, so only a device with no driver at all is ever touched.
+$script:RndisIdPattern  = '^USB\\VID_0525&PID_A4A2(&MI_[0-9A-F]{2})?\\'
+$script:RndisInfName    = 'rndiscmp.inf'
+$script:RndisHardwareId = 'USB\MS_COMP_RNDIS&MS_SUBCOMP_5162001'
+$script:RndisService    = 'usbrndis6'
+$script:NetClassGuid    = '{4d36e972-e325-11ce-bfc1-08002be10318}'
+# With no exact-ID driver for it, Windows matches the gadget's CDC class code to
+# its USB serial driver and files it under Ports as "USB Serial Device (COMx)".
+# That is a generic compatible-ID match, which Crestron's exact-ID INF outranks on
+# x64; here it is replaced. Any other driver is still left alone.
+$script:RndisReplaceable = @{ 'usbser' = 'usbser.inf' }
+
 # Left behind by the first (signed-package) version of this tool, which ARM64
 # Windows rejects. Still cleaned up so an old install does not linger.
 $script:LegacyCertSubject  = 'CN=ArmUsb Local Driver Signer'
@@ -85,10 +101,12 @@ function Get-DeviceInterfaceGuids {
 function Get-CrestronUsbDevices {
     param([switch]$All)
     $devs = if ($All) { Get-PnpDevice -ErrorAction SilentlyContinue } else { Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue }
-    foreach ($d in @($devs | Where-Object { $_.InstanceId -match $script:CrestronIdPattern })) {
+    $wanted = @($devs | Where-Object { $_.InstanceId -match $script:CrestronIdPattern -or $_.InstanceId -match $script:RndisIdPattern })
+    foreach ($d in $wanted) {
         $guids = @(Get-DeviceInterfaceGuids $d.InstanceId)
         [pscustomobject]@{
             InstanceId = $d.InstanceId
+            Kind       = if ($d.InstanceId -match $script:RndisIdPattern) { 'RNDIS' } else { 'WinUSB' }
             Name       = $d.FriendlyName
             Status     = $d.Status
             Present    = [bool](Get-DeviceProp $d.InstanceId 'DEVPKEY_Device_IsPresent')
@@ -168,7 +186,11 @@ function Remove-LegacyInstall {
     $problems
 }
 
-# --- Binding a device to inbox WinUSB ----------------------------------------
+# --- Binding a device to an inbox driver --------------------------------------
+# RNDIS devices use the same code with rndiscmp.inf and its
+# USB\MS_COMP_RNDIS&MS_SUBCOMP_5162001 model (class Net): Device Manager's
+# "Network adapters > Microsoft > Remote NDIS Compatible Device".
+# WinUSB devices, as below:
 # Does what Device Manager > Update driver > Let me pick > Universal Serial Bus
 # devices > "WinUsb Device" does: select the USB\MS_COMP_WINUSB model from
 # Microsoft's own winusb.inf and install it on one specific device. Everything
@@ -199,6 +221,10 @@ namespace ArmUsb {
 
     public static readonly Guid UsbDeviceClass = new Guid("88BAE032-5A81-49f0-BC3D-A4FF138216D6");
     public const string WinUsbHardwareId = "USB\\MS_COMP_WINUSB";
+
+    public static string Bind(string instanceId, string infPath, bool commit, out bool needReboot) {
+      return Bind(instanceId, infPath, UsbDeviceClass, WinUsbHardwareId, commit, out needReboot);
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     struct SP_DEVINFO_DATA { public uint cbSize; public Guid ClassGuid; public uint DevInst; public IntPtr Reserved; }
@@ -287,19 +313,27 @@ namespace ArmUsb {
       throw new InvalidOperationException("SetupDiGetDriverInfoDetail kept asking for a larger buffer.");
     }
 
-    // Finds the WinUsb Device driver in infPath for this device and, if commit is
-    // true, installs it. Returns the driver's description. With commit false,
-    // nothing on the system changes (the class is only checked, not set).
-    public static string Bind(string instanceId, string infPath, bool commit, out bool needReboot) {
+    // Finds the driver model with hardware ID hwid (setup class cls) in infPath
+    // for this device and, if commit is true, installs it. Returns the driver's
+    // description. With commit false, nothing on the system changes (the class
+    // is only checked, not set).
+    public static string Bind(string instanceId, string infPath, Guid cls, string hwid, bool commit, out bool needReboot) {
       Check64();
       needReboot = false;
       SP_DEVINFO_DATA dev = new SP_DEVINFO_DATA();
       IntPtr set = Open(instanceId, ref dev);
       try {
-        if (dev.ClassGuid != UsbDeviceClass && commit) {
+        if (!commit && dev.ClassGuid != Guid.Empty && dev.ClassGuid != cls) {
+          // The device already belongs to another class (e.g. Ports, when Windows
+          // has put it on its USB serial driver). The driver list is built for the
+          // current class, so a preview cannot look the driver up without changing
+          // the device; the real install changes the class first, then checks.
+          return hwid + " from " + System.IO.Path.GetFileName(infPath) + " (checked during install)";
+        }
+        if (dev.ClassGuid != cls && commit) {
           // An unbound device has no class; the class driver list is built for
-          // the device's class, so set it to USBDevice first, as Device Manager does.
-          byte[] g = Encoding.Unicode.GetBytes(UsbDeviceClass.ToString("B") + "\0");
+          // the device's class, so set it first, as Device Manager does.
+          byte[] g = Encoding.Unicode.GetBytes(cls.ToString("B") + "\0");
           if (!SetupDiSetDeviceRegistryPropertyW(set, ref dev, SPDRP_CLASSGUID, g, (uint)g.Length))
             throw Err("Setting the device class");
           SetupDiDestroyDeviceInfoList(set);
@@ -325,15 +359,15 @@ namespace ArmUsb {
             if (Marshal.GetLastWin32Error() == ERROR_NO_MORE_ITEMS) break;
             throw Err("SetupDiEnumDriverInfo");
           }
-          if (string.Equals(HardwareId(set, ref dev, ref drv), WinUsbHardwareId, StringComparison.OrdinalIgnoreCase)) {
+          if (string.Equals(HardwareId(set, ref dev, ref drv), hwid, StringComparison.OrdinalIgnoreCase)) {
             found = true;
             break;
           }
         }
         if (!found) {
-          string why = dev.ClassGuid != UsbDeviceClass
-            ? " (the device has no USBDevice class yet; a real install sets it first)" : "";
-          throw new InvalidOperationException(infPath + " offered no " + WinUsbHardwareId + " driver for " + instanceId + why);
+          string why = dev.ClassGuid != cls
+            ? " (the device is not in class " + cls.ToString("B") + " yet; a real install sets it first)" : "";
+          throw new InvalidOperationException(infPath + " offered no " + hwid + " driver for " + instanceId + why);
         }
         string desc = drv.Description + " by " + drv.ProviderName;
         if (!commit) return desc;

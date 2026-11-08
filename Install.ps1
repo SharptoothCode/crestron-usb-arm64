@@ -13,6 +13,10 @@
       2. Binds the device to Microsoft's WinUSB driver (winusb.inf, which ships
          with Windows), the same as picking "WinUsb Device" in Device Manager.
 
+    4-Series processors (CP4 etc.) instead show up as a USB network adapter,
+    "RNDIS/Ethernet Gadget" (USB\VID_0525&PID_A4A2). Those are bound to Microsoft's
+    "Remote NDIS Compatible Device" (rndiscmp.inf) and need no interface GUID.
+
     No driver package, catalog or certificate is involved, because everything
     installed is Microsoft's. Devices already on WinUSB are checked and fixed if
     the interface GUID is missing. Devices bound to some other driver are left alone.
@@ -53,6 +57,7 @@ try {
     Initialize-Binder
     $winusbInf = Join-Path $env:windir 'INF\winusb.inf'
     if (-not (Test-Path $winusbInf)) { throw "$winusbInf is missing; this Windows has no inbox WinUSB." }
+    $rndisInf = Join-Path $env:windir "INF\$RndisInfName"
 
     # Clean up after the first version of this tool (signed package, rejected on ARM64).
     if (@(Get-LegacyCertificates).Count -or @(Get-LegacyDriverPackages).Count) {
@@ -65,7 +70,8 @@ try {
     $devices = @(Get-CrestronUsbDevices)
     if (-not $devices.Count) {
         Write-Host 'No Crestron USB device is connected. Plug one in (in Parallels: Devices >'
-        Write-Host 'USB & Bluetooth > "Crestron Device"), then run this again.'
+        Write-Host 'USB & Bluetooth > "Crestron Device", or "RNDIS/Ethernet Gadget" for a 4-Series'
+        Write-Host 'processor such as a CP4), then run this again.'
         return
     }
 
@@ -75,7 +81,33 @@ try {
         $id = $d.InstanceId
         $action = ''
         try {
-            if ($d.Service -ieq 'WINUSB') {
+            if ($d.Kind -eq 'RNDIS') {
+                # USB-Ethernet (4-Series processors). Toolbox reaches these over
+                # the network adapter, so there is no interface GUID to set.
+                $replaceable = $d.Service -and $RndisReplaceable.ContainsKey($d.Service) -and
+                    (Split-Path $d.InfPath -Leaf) -ieq $RndisReplaceable[$d.Service]
+                if ($d.Service -ieq $RndisService) {
+                    $action = 'already set up (USB network adapter)'
+                } elseif ($d.Service -and -not $replaceable) {
+                    $action = "skipped: uses driver '$($d.Service)', left alone"
+                } else {
+                    $reboot = $false
+                    $desc = [ArmUsb.WinUsbBinder]::Bind($id, $rndisInf, [guid]$NetClassGuid, $RndisHardwareId, $false, [ref]$reboot)
+                    $from = if ($replaceable) { " (replacing Windows' '$($d.Service)' serial driver)" } else { '' }
+                    if ($PSCmdlet.ShouldProcess($id, "Bind to $desc$from")) {
+                        [ArmUsb.WinUsbBinder]::Bind($id, $rndisInf, [guid]$NetClassGuid, $RndisHardwareId, $true, [ref]$reboot) | Out-Null
+                        $action = if ($reboot) { "bound to RNDIS$from (restart Windows to finish)" } else { "bound to RNDIS$from (USB network adapter)" }
+                    } else {
+                        $action = "would bind to $desc"
+                    }
+                }
+                if (-not $WhatIfPreference -and $action -notlike 'skipped*') {
+                    $bound += $id
+                    if ((Get-DeviceProp $id 'DEVPKEY_Device_Service') -ine $RndisService) {
+                        throw "finished, but the device is not running $RndisService"
+                    }
+                }
+            } elseif ($d.Service -ieq 'WINUSB') {
                 if ($d.HasGuid -and (Test-CrestronInterfaceEnabled $id)) {
                     $action = 'already set up'
                 } elseif ($PSCmdlet.ShouldProcess($id, 'Set Toolbox interface GUID and restart device')) {
@@ -102,7 +134,7 @@ try {
                     $action = "would bind to $desc"
                 }
             }
-            if (-not $WhatIfPreference -and $action -notlike 'skipped*') {
+            if ($d.Kind -ne 'RNDIS' -and -not $WhatIfPreference -and $action -notlike 'skipped*') {
                 $bound += $id
                 if (-not (Test-CrestronInterfaceEnabled $id)) {
                     throw 'finished, but Toolbox interface is not enabled on the device'
@@ -124,7 +156,11 @@ try {
         Write-Host 'IR learner while learning, or it reports "An invalid device is connected".'
     }
     if ($exitCode -eq 0 -and -not $WhatIfPreference) {
-        Write-Host 'Done. Open Toolbox and connect over USB.' -ForegroundColor Green
+        if (@($results | Where-Object { $_.Result -notlike 'skipped*' }).Count) {
+            Write-Host 'Done. Open Toolbox and connect over USB.' -ForegroundColor Green
+        } else {
+            Write-Host 'Nothing was changed: every device found already uses another driver.' -ForegroundColor Yellow
+        }
     }
 } catch {
     Write-Host "INSTALL FAILED: $($_.Exception.Message)" -ForegroundColor Red

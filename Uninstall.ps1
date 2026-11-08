@@ -4,9 +4,11 @@
 
 .DESCRIPTION
     Removes the Windows device entry for each Crestron USB device that is on
-    Microsoft's WinUSB through winusb.inf (the binding Install.ps1 makes, or the
+    Microsoft's WinUSB through winusb.inf, or (4-Series USB-Ethernet) on Microsoft's
+    RNDIS through rndiscmp.inf (the bindings Install.ps1 makes, or the
     same one made by hand in Device Manager), connected or not. Connected devices
-    are then re-detected and show as an unknown "Crestron Device" again.
+    are then re-detected and show as an unknown "Crestron Device" again (a 4-Series
+    RNDIS device goes back to whatever Windows picks, usually its USB serial driver).
 
     Also removes anything left by the first version of this tool (a signed driver
     package and its local certificate) and %ProgramData%\ArmUsb.
@@ -35,11 +37,12 @@ try {
     # Ours: on WinUSB via the inbox INF. Includes devices not plugged in right now,
     # so an old port's entry does not keep the binding around.
     $targets = @(Get-CrestronUsbDevices -All | Where-Object {
-        $_.Service -ieq 'WINUSB' -and (Split-Path $_.InfPath -Leaf) -ieq 'winusb.inf'
+        ($_.Kind -eq 'WinUSB' -and $_.Service -ieq 'WINUSB' -and (Split-Path $_.InfPath -Leaf) -ieq 'winusb.inf') -or
+        ($_.Kind -eq 'RNDIS' -and $_.Service -ieq $RndisService -and (Split-Path $_.InfPath -Leaf) -ieq $RndisInfName)
     })
     $anyPresent = $false
     foreach ($d in $targets) {
-        if ($PSCmdlet.ShouldProcess($d.InstanceId, 'Remove device entry (unbinds WinUSB)')) {
+        if ($PSCmdlet.ShouldProcess($d.InstanceId, 'Remove device entry (unbinds its driver)')) {
             & $say "Removing $($d.InstanceId)$(if (-not $d.Present) { ' (not connected)' })"
             $r = Invoke-PnpUtil @('/remove-device', $d.InstanceId)
             if ($r.ExitCode -ne 0 -and $r.ExitCode -ne 3010) {
@@ -64,7 +67,7 @@ try {
         $problems | ForEach-Object { Write-Host $_ -ForegroundColor Red }
         $exitCode = 1
     } else {
-        if (-not $targets.Count) { & $say 'No Crestron device was bound to WinUSB.' }
+        if (-not $targets.Count) { & $say 'No Crestron device was bound by ArmUsb.' }
         & $say 'ArmUsb is removed.'
         $exitCode = 0
     }
